@@ -1,0 +1,56 @@
+# ── API ──────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+websockets
+python-multipart
+
+# ── LangGraph ─────────────────────────────────────────────────
+langgraph
+langchain-groq
+langchain-openai
+langchain-core
+
+# ── Kafka ─────────────────────────────────────────────────────
+aiokafka
+
+# ── Postgres ──────────────────────────────────────────────────
+asyncpg
+sqlalchemy[asyncio]
+alembic
+
+# ── Redis ─────────────────────────────────────────────────────
+redis[hiredis]
+langgraph-checkpoint-redis
+
+# ── Qdrant ────────────────────────────────────────────────────
+qdrant-client
+sentence-transformers
+
+# ── Voice ─────────────────────────────────────────────────────
+deepgram-sdk
+elevenlabs
+
+# ── Observability ─────────────────────────────────────────────
+opentelemetry-sdk
+opentelemetry-api
+opentelemetry-instrumentation-fastapi
+opentelemetry-exporter-otlp
+prometheus-client
+
+# ── Utilities ─────────────────────────────────────────────────
+pydantic
+pydantic-settings
+httpx
+python-dotenv
+tenacity
+
+# ── GCS ───────────────────────────────────────────────────────
+google-cloud-storage
+
+# ── Eval ──────────────────────────────────────────────────────
+deepeval
+
+# ── Dev / Testing ─────────────────────────────────────────────
+pytest
+pytest-asyncio
+pytest-mock
