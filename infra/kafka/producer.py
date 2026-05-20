@@ -5,7 +5,7 @@ from infra.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-__producer = None
+_producer = None
 
 async def init_producer():
     """
