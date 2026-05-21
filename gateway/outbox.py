@@ -129,6 +129,9 @@ async def _publish_pending_outbox_events():
         )
         events = result.scalars().all()
 
+        if events:
+            logger.info(f"CDC relay found {len(events)} unsent events")
+
         if not events:
             return
 

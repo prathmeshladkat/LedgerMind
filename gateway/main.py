@@ -9,6 +9,8 @@ from infra.redis.client import init_redis, close_redis
 from infra.kafka.producer import init_producer, close_producer
 from infra.qdrant.client import init_qdrant, ensure_collection
 from gateway.routers import filings, review, voice, watchlist
+import asyncio
+from gateway.outbox import run_cdc_relay
 
 logging.basicConfig(level="INFO")
 logger = logging.getLogger(__name__)
@@ -25,10 +27,15 @@ async def lifespan(app: FastAPI):
 
     init_db()
     init_redis()
-    init_qdrant()
-    await ensure_collection()
+    try:
+        init_qdrant()
+        await ensure_collection()
+    except Exception as e:
+        logger.warning(f"Qdrant skipped at startup: {e}")
     await init_producer()
 
+    # this polls outbox table and publishes to Kafka
+    cdc_task = asyncio.create_task(run_cdc_relay())
     logger.info("All clients initalized. Gateway ready.")
 
     yield 

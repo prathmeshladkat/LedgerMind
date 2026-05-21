@@ -4,3 +4,4 @@ __pycache__
 .vscode
 .deepeval
 .pytest_cache
+gcp-key.json

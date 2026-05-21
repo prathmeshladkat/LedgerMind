@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     kafka_bootstrap_servers: str = "localhost:9092"
 
     # ── Qdrant ────────────────────────────────────────────────
-    qdrant_url: str = "http://localhost:6333"
+    qdrant_url: str = ""
     qdrant_api_key: str = ""
 
     # ── LLMs ──────────────────────────────────────────────────

@@ -23,7 +23,8 @@ def init_qdrant():
 
     _client = AsyncQdrantClient(
         url=settings.qdrant_url,
-        api_key=settings.qdrant_api_key or None
+        api_key=settings.qdrant_api_key or None,
+        https=True,
     )
     logger.info("Qdrant client initialized")
 

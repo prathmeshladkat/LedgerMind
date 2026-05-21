@@ -18,20 +18,20 @@ services:
     image: confluentinc/cp-kafka:7.6.0
     container_name: cs_kafka
     depends_on:
-      - zookeeper          
+      - zookeeper
     ports:
       - "9092:9092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      # localhost:9092 is what your python code uses to connect
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      # 1 means no replication - fine for local dev
+      # TWO listeners - one for host machine, one for docker containers
+      KAFKA_LISTENERS: PLAINTEXT_HOST://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_HOST://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT_HOST:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      # kafka auto creates topics when first message is sent
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     restart: unless-stopped
-
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -42,7 +42,8 @@ services:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: capitalsense
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      # kafka-ui uses internal docker network to reach kafka
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
     restart: unless-stopped
 
 
