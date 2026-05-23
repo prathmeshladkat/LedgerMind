@@ -22,6 +22,10 @@ def init_gcs():
     global _bucket
     settings = get_settings()
 
+    import os
+    # set environment variable so Google SDK finds credentials
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials
+
     client = storage.Client()
     _bucket = client.bucket(settings.gcs_bucket_name)
     logger.info(f"GCS initialized: bucket={settings.gcs_bucket_name}")

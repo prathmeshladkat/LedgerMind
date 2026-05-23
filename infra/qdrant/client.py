@@ -1,5 +1,5 @@
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import Distance, VectorParams, PayloadSchemaType
 from infra.settings import get_settings
 import logging
 
@@ -58,6 +58,22 @@ async def ensure_collection():
         logger.info(f"Created Qdrant collection: {COLLECTION_NAME}")
     else:
         logger.info(f"Qdrant collection already exists: {COLLECTION_NAME}")
+
+    try:
+        await client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name="ticker",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        await client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name="filing_type",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        logger.info("Payload indexes created for ticker and filing_type")
+    except Exception as e:
+        # indexes may already exist - that's fine
+        logger.info(f"Payload indexes already exist: {e}")
 
 
 async def close_qdrant():

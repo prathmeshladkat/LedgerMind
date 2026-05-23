@@ -1,108 +1,226 @@
-import asyncio
+# gateway/routers/voice.py
+# WebSocket endpoint for voice agent
+# handles full voice pipeline directly in the gateway
+
 import logging
 import json
-import base64
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from agents.voice_pipeline.graph import voice_graph
 from agents.state import VoiceState
-from infra.redis.client import get_redis
-from workers.voice_worker import transcribe_audio, run_voice_graph
 from infra.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# how many seconds of silence triggers end of utterance
-SILENCE_THRESHOLD_SECONDS = 0.8
-
-# minimum audio size to attempt transcription (bytes)
-# prevents transcribing empty or too-short clips
 MIN_AUDIO_BYTES = 1000
+
+
+async def transcribe_audio_deepgram(audio_bytes: bytes) -> str:
+    """transcribes audio using Deepgram REST API."""
+    import httpx
+    settings = get_settings()
+
+    if not settings.deepgram_api_key:
+        logger.warning("No Deepgram key - using mock transcript")
+        return "What are NVDA's biggest risks?"
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.deepgram.com/v1/listen?model=nova-2&language=en-US",
+            headers={
+                "Authorization": f"Token {settings.deepgram_api_key}",
+                "Content-Type": "audio/webm",
+            },
+            content=audio_bytes,
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    transcript = (
+        data.get("results", {})
+        .get("channels", [{}])[0]
+        .get("alternatives", [{}])[0]
+        .get("transcript", "")
+    )
+    return transcript.strip()
+
+
+async def run_voice_pipeline(transcript: str, session_id: str) -> dict:
+    """runs the voice graph and returns result."""
+    state = VoiceState(
+        transcript=transcript,
+        session_id=session_id,
+        intent=None,
+        tickers=[],
+        fetched_data=None,
+        spoken_response=None,
+        audio_bytes=None,
+        errors=[],
+    )
+    result = await voice_graph.ainvoke(state)
+    logger.info(f"Raw result keys: {list(result.keys())}")
+    logger.info(f"spoken_response: {result.get('spoken_response', 'MISSING')[:50] if result.get('spoken_response') else 'NONE'}")
+    logger.info(f"audio_bytes: {len(result.get('audio_bytes') or b'')} bytes")
+    return result
+
+
+async def safe_send_text(websocket: WebSocket, data: dict) -> bool:
+    """
+    sends text message safely.
+    returns False if connection is closed.
+    """
+    try:
+        await websocket.send_text(json.dumps(data))
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send text: {e}")
+        return False
+
+
+async def safe_send_bytes(websocket: WebSocket, data: bytes) -> bool:
+    """
+    sends binary message safely.
+    returns False if connection is closed.
+    """
+    try:
+        await websocket.send_bytes(data)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send bytes: {e}")
+        return False
 
 
 @router.websocket("/ws/voice")
 async def voice_websocket(websocket: WebSocket):
     """
     WebSocket endpoint for voice agent.
-
-    message flow:
-    browser mic → WebRTC → WebSocket binary message → VAD check
-    → accumulate speech chunks → silence detected
-    → flush to Deepgram STT → voice graph
-    → ElevenLabs TTS → binary audio → WebSocket → browser speaker
-
-    client sends:
-    - binary messages = audio chunks (webm/opus from MediaRecorder)
-    - text message {"type": "end"} = user explicitly stopped
-
-    server sends:
-    - text message {"type": "transcript", "text": "..."} = what we heard
-    - text message {"type": "response", "text": "..."} = spoken response text
-    - binary message = audio bytes to play in browser
+    browser sends audio chunks → transcribe → voice graph → send audio back
     """
     await websocket.accept()
-    session_id = id(websocket)   # unique per connection
-
+    session_id = str(id(websocket))
     logger.info(f"Voice WebSocket connected: session={session_id}")
 
-    # buffer accumulates audio chunks during speech
     audio_buffer = bytearray()
-    is_speaking = False
 
     try:
         while True:
-            # receive next message from browser
             message = await websocket.receive()
 
-            # binary message = audio chunk from MediaRecorder
-            if "bytes" in message:
-                chunk = message["bytes"]
-                audio_buffer.extend(chunk)
+            # ── binary message = audio chunk from browser ──────────
+            if "bytes" in message and message["bytes"]:
+                audio_buffer.extend(message["bytes"])
+                continue
 
-                # simple VAD: we accumulate until client signals end
-                # full Silero VAD would run here in production
-                # for demo, we process when buffer reaches threshold
-                is_speaking = True
+            # ── text message = control signal ──────────────────────
+            if "text" not in message:
+                continue
 
-            # text message = control signal from browser
-            elif "text" in message:
-                try:
-                    data = json.loads(message["text"])
-                    msg_type = data.get("type")
+            try:
+                data = json.loads(message["text"])
+            except json.JSONDecodeError:
+                continue
 
-                    # client signals end of utterance
-                    if msg_type == "end_of_speech":
-                        if len(audio_buffer) > MIN_AUDIO_BYTES:
-                            logger.info(
-                                f"Processing utterance: "
-                                f"{len(audio_buffer)} bytes"
-                            )
+            msg_type = data.get("type")
 
-                            # send acknowledgement to browser
-                            await websocket.send_text(json.dumps({
-                                "type": "processing",
-                                "message": "Processing your question..."
-                            }))
+            # ── ping keepalive ─────────────────────────────────────
+            if msg_type == "ping":
+                await safe_send_text(websocket, {"type": "pong"})
+                continue
 
-                            # run voice pipeline
-                            result = await process_utterance(
-                                bytes(audio_buffer),
-                                session_id,
-                                websocket
-                            )
+            # ── end of speech - process the audio ──────────────────
+            if msg_type != "end_of_speech":
+                continue
 
-                            # clear buffer for next utterance
-                            audio_buffer.clear()
-                            is_speaking = False
+            # check buffer has enough audio
+            if len(audio_buffer) < MIN_AUDIO_BYTES:
+                await safe_send_text(websocket, {
+                    "type": "error",
+                    "message": "Audio too short. Please speak longer."
+                })
+                audio_buffer.clear()
+                continue
 
-                    elif msg_type == "ping":
-                        await websocket.send_text(
-                            json.dumps({"type": "pong"})
-                        )
+            # snapshot and clear buffer
+            audio_bytes = bytes(audio_buffer)
+            audio_buffer.clear()
 
-                except json.JSONDecodeError:
-                    pass
+            # tell browser we are processing
+            ok = await safe_send_text(websocket, {
+                "type": "processing",
+                "message": "Processing your question..."
+            })
+            if not ok:
+                break
+
+            # ── step 1: transcribe ─────────────────────────────────
+            try:
+                transcript = await transcribe_audio_deepgram(audio_bytes)
+                logger.info(f"Transcript: '{transcript}'")
+            except Exception as e:
+                logger.error(f"Transcription failed: {e}")
+                await safe_send_text(websocket, {
+                    "type": "error",
+                    "message": "Could not transcribe audio. Please try again."
+                })
+                continue
+
+            if not transcript:
+                await safe_send_text(websocket, {
+                    "type": "error",
+                    "message": "Could not understand audio. Please speak more clearly."
+                })
+                continue
+
+            # send transcript to browser so user sees what we heard
+            ok = await safe_send_text(websocket, {
+                "type": "transcript",
+                "text": transcript
+            })
+            if not ok:
+                break
+
+            # ── step 2: run voice pipeline ─────────────────────────
+            try:
+                logger.info("Running voice pipeline...")
+                result = await run_voice_pipeline(transcript, session_id)
+                logger.info(
+                    f"Pipeline complete. "
+                    f"spoken={len(result.get('spoken_response') or '')} chars "
+                    f"audio={len(result.get('audio_bytes') or b'')} bytes"
+                )
+            except Exception as e:
+                logger.error(f"Voice pipeline failed: {e}")
+                await safe_send_text(websocket, {
+                    "type": "error",
+                    "message": "Could not generate response. Please try again."
+                })
+                continue
+
+            # ── step 3: send spoken text response ──────────────────
+            spoken = result.get("spoken_response") or ""
+            audio_out = result.get("audio_bytes") or b""
+
+            logger.info(f"spoken_response present: {bool(spoken)}")
+            logger.info(f"audio_bytes present: {len(audio_out)} bytes")
+            if spoken:
+                ok = await safe_send_text(websocket, {
+                    "type": "response",
+                    "text": spoken
+                })
+                if not ok:
+                    break
+                logger.info("Text response sent")
+
+            # ── step 4: send audio bytes ───────────────────────────
+            audio_out = result.get("audio_bytes") or b""
+            if len(audio_out) > 0:
+                ok = await safe_send_bytes(websocket, audio_out)
+                if ok:
+                    logger.info(f"Audio sent: {len(audio_out)} bytes")
+                else:
+                    break
 
     except WebSocketDisconnect:
         logger.info(f"Voice WebSocket disconnected: session={session_id}")
@@ -110,58 +228,4 @@ async def voice_websocket(websocket: WebSocket):
         logger.error(f"Voice WebSocket error: {e}")
     finally:
         audio_buffer.clear()
-
-
-async def process_utterance(
-    audio_bytes: bytes,
-    session_id: int,
-    websocket: WebSocket
-) -> dict:
-    """
-    processes one complete utterance end to end.
-    sends progress updates to browser via WebSocket.
-    returns final result dict.
-    """
-    try:
-        # step 1: speech to text
-        transcript = await transcribe_audio(audio_bytes)
-
-        if not transcript:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": "Could not understand audio. Please try again."
-            }))
-            return {}
-
-        # send transcript to browser so user sees what we heard
-        await websocket.send_text(json.dumps({
-            "type": "transcript",
-            "text": transcript
-        }))
-        logger.info(f"Transcript: '{transcript}'")
-
-        # step 2: run voice graph (intent → query → speak)
-        result = await run_voice_graph(transcript, str(session_id))
-
-        # send spoken response text to browser
-        if result.get("spoken_response"):
-            await websocket.send_text(json.dumps({
-                "type": "response",
-                "text": result["spoken_response"]
-            }))
-
-        # step 3: send audio bytes to browser
-        audio_out = result.get("audio_bytes", b"")
-        if audio_out:
-            await websocket.send_bytes(audio_out)
-            logger.info(f"Sent {len(audio_out)} audio bytes to browser")
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Utterance processing failed: {e}")
-        await websocket.send_text(json.dumps({
-            "type": "error",
-            "message": "Something went wrong. Please try again."
-        }))
-        return {}
+        logger.info(f"Voice WebSocket cleanup done: session={session_id}")

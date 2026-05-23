@@ -17,7 +17,7 @@ from infra.settings import get_settings
 logger = logging.getLogger(__name__)
 
 # ElevenLabs voice ID - "Rachel" is clear and professional
-DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
+DEFAULT_VOICE_ID = "EXAVITQu4vr4xnSDxMaL"
 
 async def format_for_voice(
         data: dict,
@@ -57,10 +57,10 @@ def text_to_speech(text: str) -> bytes:
     settings = get_settings()
     client = ElevenLabs(api_key=settings.elevenlabs_api_key)
 
-    audio = client.generate(
+    audio = client.text_to_speech.convert(
         text=text,
-        voide=DEFAULT_VOICE_ID,
-        model="eleven_monolingual_v1"
+        voice_id=DEFAULT_VOICE_ID,
+        model_id="eleven_flash_v2_5"
     )
 
     audio_bytes = b"".join(audio)

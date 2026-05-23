@@ -61,9 +61,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(voice.router, prefix="/api", tags=["voice"])
 app.include_router(filings.router, prefix="/api", tags=["filings"])
 app.include_router(review.router, prefix="/api", tags=["review"])
-app.include_router(voice.router, prefix="/api", tags=["voice"])
 app.include_router(watchlist.router, prefix="/api", tags=["watchlist"])
 
 @app.get("/health")

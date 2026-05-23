@@ -82,6 +82,9 @@ def get_consumer_config(group_id: str) -> dict:
         # only after our agent successfully finishes
         # if we crash before committing, kafka resends the message
         "enable_auto_commit": False,
+        "max_poll_interval_ms": 300000,   # 5 minutes
+        "session_timeout_ms": 30000,
+        "heartbeat_interval_ms": 10000,
 
         # converts bytes → json string → dict automatically
         "value_deserializer": lambda v: json.loads(v.decode("utf-8")),

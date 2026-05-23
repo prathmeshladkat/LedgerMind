@@ -107,12 +107,12 @@ class BaseWorker:
         async for kafka_message in self.consumer:
             if not self.running:
                 break
-
-            message = kafka_message.value  # already deserialized to dict
+            
+            message = kafka_message.value
             attempt = 0
             success = False
-
-            # retry loop — try MAX_ATTEMPTS times before DLQ
+            last_error = None    # add this line
+    
             while attempt < MAX_ATTEMPTS and not success:
                 try:
                     attempt += 1
@@ -120,28 +120,21 @@ class BaseWorker:
                         f"Processing message attempt {attempt}/{MAX_ATTEMPTS} "
                         f"topic={self.topic}"
                     )
-
                     await self.process_message(message)
                     success = True
-
+    
                 except Exception as e:
-                    logger.warning(
-                        f"Attempt {attempt} failed: {str(e)}"
-                    )
+                    last_error = e    # save error here
+                    logger.warning(f"Attempt {attempt} failed: {str(e)}")
                     if attempt < MAX_ATTEMPTS:
-                        # wait before retrying (exponential backoff)
-                        # attempt 1 → wait 1s, attempt 2 → wait 2s
                         wait_seconds = attempt * 1
                         logger.info(f"Retrying in {wait_seconds}s...")
                         await asyncio.sleep(wait_seconds)
-
+    
             if not success:
-                # PATTERN: Dead Letter Queue — all retries exhausted
-                await self.send_to_dlq(message, str(e))
-
-            # PATTERN: Manual Commit
-            # only commit after processing is done (success or DLQ)
-            # this guarantees we never silently drop a message
+                # use last_error instead of e
+                await self.send_to_dlq(message, str(last_error))
+    
             await self.consumer.commit()
 
     async def stop(self) -> None:

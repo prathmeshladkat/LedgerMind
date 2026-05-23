@@ -58,9 +58,9 @@ async def retrieve_relevant_chunks(
     # filter ensures we only get chunks from this specific filing
     from qdrant_client.models import Filter, FieldCondition, MatchValue
 
-    results = await qdrant.search(
+    results = await qdrant.query_points(
         collection_name=COLLECTION_NAME,
-        query_vector=query_vector,
+        query=query_vector,
         limit=top_k,
         query_filter=Filter(
             must=[
@@ -77,7 +77,8 @@ async def retrieve_relevant_chunks(
     )
 
     # extract just the text from results
-    return [r.payload["text"] for r in results]
+    points = results.points if hasattr(results, 'points') else results
+    return [p.payload["text"] for p in points]
 
 
 def parse_llm_json_response(response_text: str) -> dict:
@@ -133,10 +134,11 @@ async def extract_signals_node(state: FilingState) -> dict:
             ticker=ticker,
             filing_type=filing_type,
             query=search_query,
-            top_k=5
+            top_k=3
         )
 
         # join chunks into one string for the prompt
+        truncated_chunks = [chunk[:500] for chunk in relevant_chunks]
         chunks_text = "\n\n---\n\n".join(relevant_chunks)
 
         # decide which prompt to use

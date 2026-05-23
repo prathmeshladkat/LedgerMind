@@ -106,6 +106,10 @@ async def websocket_status(websocket: WebSocket, thread_id: str):
     flow:
     agent → Redis pub/sub → this handler → WebSocket → browser
     """
+    if thread_id == "voice":
+        await websocket.close(code=4000, reason="use /api/ws/voice endpoint")
+        return
+    
     await websocket.accept()
     redis = get_redis()
 

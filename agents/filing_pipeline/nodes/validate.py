@@ -1,31 +1,26 @@
+# agents/filing_pipeline/nodes/validate.py
+# validates signal quality and routes accordingly
+# HITL is handled by publishing to a special Redis channel
+# instead of using LangGraph interrupt() which requires graph context
 
 import logging
-from langgraph.types import interrupt
 from agents.state import FilingState
-from infra.redis.client import publish_status
+from infra.redis.client import publish_status, get_redis
+import json
 
 logger = logging.getLogger(__name__)
 
-# confidence threshold - above this, signals are published automatically
 CONFIDENCE_THRESHOLD = 0.85
-
-# max retries before escalating to human
-# PATTERN: Circuit Breaker - stops retry loop after N attempts
 MAX_RETRIES = 2
 
 
 async def validate_output_node(state: FilingState) -> dict:
     """
     checks signal quality and routes accordingly.
-    this node does NOT call an LLM - it's pure Python logic.
-
-    three possible outcomes:
-    1. confidence >= 0.85 → approve, move to emit
-    2. confidence < 0.85 AND retries left → increment retry_count, loop back
-    3. confidence < 0.85 AND no retries left → interrupt() for human review
-
-    LangGraph reads the routing function (route_after_validation)
-    to decide which node runs next based on what this node returns.
+    three outcomes:
+    1. high confidence → approve
+    2. low confidence + retries left → increment retry_count
+    3. low confidence + no retries → publish to human_review channel
     """
     thread_id = state["thread_id"]
     confidence = state.get("confidence", 0.0)
@@ -38,10 +33,9 @@ async def validate_output_node(state: FilingState) -> dict:
         f"retry_count={retry_count}"
     )
 
-    # case 1: no signals at all (fetch or chunk failed)
-    # escalate immediately without retrying
+    # case 1: no signals at all
     if not signals:
-        error_msg = "No signals to validate - upstream agent failed"
+        error_msg = "No signals to validate — upstream agent failed"
         logger.error(error_msg)
 
         await publish_status(thread_id, "validation_failed", {
@@ -49,23 +43,16 @@ async def validate_output_node(state: FilingState) -> dict:
             "errors": errors
         })
 
-        # PATTERN: HITL - interrupt pauses graph, saves state to Redis
-        # analyst sees this in the review UI and can manually fill signals
-        human_input = interrupt({
-            "reason": "no_signals",
-            "message": error_msg,
-            "errors": errors,
-        })
+        # publish to human review channel instead of interrupt()
+        await _publish_human_review(thread_id, state, "no_signals", error_msg)
 
-        # when analyst resumes, human_input contains their corrections
         return {
-            "signals": human_input.get("signals", {}),
-            "confidence": 1.0,   # human reviewed = full confidence
-            "human_feedback": str(human_input),
+            "signals": signals,
+            "confidence": confidence,
+            "human_feedback": "escalated_no_signals",
         }
 
     # case 2: low confidence but retries remaining
-    # PATTERN: Circuit Breaker - only retry if under MAX_RETRIES
     if confidence < CONFIDENCE_THRESHOLD and retry_count < MAX_RETRIES:
         logger.info(
             f"Low confidence ({confidence}), "
@@ -73,82 +60,97 @@ async def validate_output_node(state: FilingState) -> dict:
         )
 
         await publish_status(thread_id, "retrying", {
-            "message": f"Low confidence, retrying extraction "
+            "message": f"Low confidence, retrying "
                       f"({retry_count + 1}/{MAX_RETRIES})",
             "confidence": confidence
         })
 
-        # increment retry_count - extract agent sees this and uses retry prompt
-        return {
-            "retry_count": retry_count + 1,
-        }
+        return {"retry_count": retry_count + 1}
 
-    # case 3: low confidence AND no retries left
-    # PATTERN: Circuit Breaker trips - escalate to human
+    # case 3: low confidence + no retries left → human review
     if confidence < CONFIDENCE_THRESHOLD and retry_count >= MAX_RETRIES:
-        logger.warning(
-            f"Max retries reached ({MAX_RETRIES}), "
-            f"escalating to human review"
-        )
+        logger.warning(f"Max retries reached, escalating to human review")
 
         await publish_status(thread_id, "human_review_required", {
-            "message": "Low confidence after retries - analyst review needed",
+            "message": "Low confidence after retries — analyst review needed",
             "confidence": confidence,
             "signals": signals,
         })
 
-        # PATTERN: HITL - graph pauses here
-        # RedisSaver saves entire state to Upstash Redis
-        # POST /review/{thread_id} resumes graph with analyst corrections
-        human_input = interrupt({
-            "reason": "low_confidence",
-            "confidence": confidence,
-            "current_signals": signals,
-            "message": "Please review and correct these signals",
-        })
-
-        # merge analyst corrections into signals
-        corrected_signals = {**signals, **human_input.get("corrections", {})}
+        # PATTERN: HITL without interrupt()
+        # publish to Redis channel so review UI can show it
+        await _publish_human_review(
+            thread_id, state, "low_confidence",
+            "Please review and correct these signals"
+        )
 
         return {
-            "signals": corrected_signals,
-            "confidence": 1.0,
-            "human_feedback": str(human_input),
+            "signals": signals,
+            "confidence": confidence,
+            "human_feedback": "pending_review",
         }
 
-    # case 4: high confidence - approve and move to emit
+    # case 4: high confidence — approve
     logger.info(f"Signals approved: confidence={confidence}")
-
     await publish_status(thread_id, "validated", {
         "message": "Signals validated successfully",
         "confidence": confidence
     })
 
-    # return empty dict - state is already correct, nothing to change
     return {}
+
+
+async def _publish_human_review(
+    thread_id: str,
+    state: FilingState,
+    reason: str,
+    message: str
+):
+    """
+    publishes to human_review Redis channel.
+    Review UI subscribes to this and shows the job to analysts.
+    """
+    try:
+        redis = get_redis()
+        payload = {
+            "thread_id": thread_id,
+            "ticker": state.get("ticker"),
+            "filing_type": state.get("filing_type"),
+            "job_id": state.get("job_id"),
+            "reason": reason,
+            "message": message,
+            "signals": state.get("signals"),
+            "confidence": state.get("confidence"),
+        }
+        await redis.publish("human_review", json.dumps(payload))
+        # also store in Redis so review page can fetch it
+        await redis.setex(
+            f"review:{thread_id}",
+            86400,  # 24 hours
+            json.dumps(payload)
+        )
+        logger.info(f"Published to human_review channel: {thread_id}")
+    except Exception as e:
+        logger.error(f"Failed to publish human review: {e}")
 
 
 def route_after_validation(state: FilingState) -> str:
     """
-    PATTERN: Conditional Edge (LangGraph routing)
-    LangGraph calls this function after validate_output_node runs.
-    the string we return tells LangGraph which node to run next.
-
-    "emit"   → move forward to emit_node
-    "retry"  → loop back to extract_signals_node
-    "end"    → stop graph (only on critical failure)
-
-    this function implements the retry loop logic.
-    it reads retry_count to know if we just incremented it.
+    routing function for conditional edges.
+    returns emit or retry.
     """
     confidence = state.get("confidence", 0.0)
     retry_count = state.get("retry_count", 0)
     signals = state.get("signals")
+    human_feedback = state.get("human_feedback")
 
-    # if validate node just incremented retry_count,
-    # and we're still under MAX_RETRIES, loop back
+    # if escalated to human review, move to emit
+    # emit will save whatever signals we have
+    if human_feedback in ("escalated_no_signals", "pending_review"):
+        return "emit"
+
+    # if just incremented retry_count, loop back
     if confidence < CONFIDENCE_THRESHOLD and retry_count <= MAX_RETRIES and signals:
         return "retry"
 
-    # otherwise move forward to emit
     return "emit"

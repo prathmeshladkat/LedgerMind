@@ -7,7 +7,8 @@ from infra.gcs.client import upload_filing
 
 logger = logging.getLogger(__name__)
 
-EDGAR_BASE_URL = "https://data.sec.gov"
+EDGAR_BASE_URL = "https://data.sec.gov"   # keep this for submissions
+SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"  
 
 EDGAR_HEADERS = {
     "User-Agent": "CapitalSense research@capitalsense.ai",
@@ -23,9 +24,9 @@ async def get_cik_for_ticker(ticker: str) -> str:
     SEC provides a public JSON file that maps all tickers to CIKs.
     we fetch it once per request (could be cached in Redis later).
     """
-    url = f"{EDGAR_BASE_URL}/files/company_tickers.json"
+    url = "https://www.sec.gov/files/company_tickers.json"
 
-    async with httpx.AsyncClient(header=EDGAR_HEADERS) as client:
+    async with httpx.AsyncClient(headers=EDGAR_HEADERS) as client:
         response = await client.get(url)
         response.raise_for_status()
         data = response.json()
@@ -41,43 +42,42 @@ async def get_cik_for_ticker(ticker: str) -> str:
 
 async def get_latest_filing_url(cik: str, filing_type: str) -> tuple[str, str, str]:
     """
-    finds the URL of the most recent filing of given type.
-    returns (filing_url, filing_date, accession_number)
-
-    SEC EDGAR submissions API returns all filings for a company.
-    we filter by filing_type and take the most recent one.
+    finds the most recent filing and returns the actual document URL.
     """
-    url = f"{EDGAR_BASE_URL}/submissions/CIK{cik}.json"
+    url = f"https://data.sec.gov/submissions/CIK{cik}.json"
 
-    async with httpx.AsyncClient(headers=EDGAR_HEADERS) as client:
-        response = await client.get(url)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=EDGAR_HEADERS, timeout=30.0)
         response.raise_for_status()
         data = response.json()
 
-    # recent filings are in data["filings"]["recent"]
     filings = data["filings"]["recent"]
-    forms = filings["form"]           # list of form types
-    dates = filings["filingDate"]     # list of filing dates
-    accessions = filings["accessionNumber"]  # list of accession numbers
+    forms = filings["form"]
+    dates = filings["filingDate"]
+    accessions = filings["accessionNumber"]
+    primary_docs = filings.get("primaryDocument", [])
 
-    # find the most recent filing matching our type
     for i, form in enumerate(forms):
         if form == filing_type:
-            accession = accessions[i].replace("-", "")  # remove dashes
+            accession_clean = accessions[i].replace("-", "")
             date = dates[i]
+            cik_int = int(cik)
 
-            # construct URL to the filing index page
-            filing_url = (
-                f"{EDGAR_BASE_URL}/Archives/edgar/full-index/"
-                f"{date[:4]}/QTR{(int(date[5:7])-1)//3+1}/"
-                f"full-index.json"
-            )
+            # get primary document name (e.g. nvda-20250126.htm)
+            primary_doc = primary_docs[i] if i < len(primary_docs) else None
 
-            # direct URL to the filing document
-            doc_url = (
-                f"https://www.sec.gov/Archives/edgar/data/"
-                f"{int(cik)}/{accession}/{accessions[i]}-index.htm"
-            )
+            if primary_doc:
+                # direct link to the actual filing document
+                doc_url = (
+                    f"https://www.sec.gov/Archives/edgar/data/"
+                    f"{cik_int}/{accession_clean}/{primary_doc}"
+                )
+            else:
+                # fallback to index page
+                doc_url = (
+                    f"https://www.sec.gov/Archives/edgar/data/"
+                    f"{cik_int}/{accession_clean}/{accessions[i]}-index.htm"
+                )
 
             return doc_url, date, accessions[i]
 

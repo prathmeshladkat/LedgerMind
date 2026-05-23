@@ -1,5 +1,9 @@
+# agents/voice_pipeline/graph.py
+# runs voice pipeline nodes sequentially
+# direct execution instead of LangGraph StateGraph
+# reason: LangGraph drops bytes fields during state merging
+
 import logging
-from langgraph.graph import StateGraph, END
 from agents.state import VoiceState
 from agents.voice_pipeline.nodes.intent import intent_parser_node
 from agents.voice_pipeline.nodes.query import query_agent_node
@@ -7,29 +11,45 @@ from agents.voice_pipeline.nodes.speak import spoken_response_node
 
 logger = logging.getLogger(__name__)
 
-def build_voice_graph():
+
+async def run_voice_pipeline_direct(state: VoiceState) -> dict:
     """
-    builds the voice pipeline graph.
-    linear flow: intent → query → speak → END
-    no conditional edges needed - always runs all 3 nodes.
-    no checkpointer - voice is stateless per utterance.
+    runs all 3 voice nodes sequentially.
+    manually merges state between nodes to avoid LangGraph bytes issue.
     """
-    graph = StateGraph(VoiceState)
+    # step 1: intent parser
+    intent_result = await intent_parser_node(state)
+    state = {**state, **intent_result}
+    logger.info(
+        f"Intent: {state.get('intent')} "
+        f"tickers: {state.get('tickers')}"
+    )
 
-    graph.add_node("intent_parser", intent_parser_node)
-    graph.add_node("query_agent", query_agent_node)
-    graph.add_node("spoken_response", spoken_response_node)
+    # step 2: query agent
+    query_result = await query_agent_node(state)
+    state = {**state, **query_result}
+    logger.info(f"Query done")
 
-    # linear edges - no branching in voice pipeline
-    graph.set_entry_point("intent_parser")
-    graph.add_edge("intent_parser", "query_agent")
-    graph.add_edge("query_agent", "spoken_response")
-    graph.add_edge("spoken_response", END)
+    # step 3: spoken response
+    speak_result = await spoken_response_node(state)
+    state = {**state, **speak_result}
+    logger.info(
+        f"Speak done. "
+        f"spoken={len(state.get('spoken_response') or '')} chars "
+        f"audio={len(state.get('audio_bytes') or b'')} bytes"
+    )
 
-    compiled = graph.compile()
-    logger.info("Voice pipeline graph compiled")
-    return compiled
-
-voice_graph = build_voice_graph()
+    return state
 
 
+class VoiceGraphWrapper:
+    """
+    drop-in replacement for compiled LangGraph graph.
+    exposes same ainvoke() interface so gateway code unchanged.
+    """
+    async def ainvoke(self, state: VoiceState) -> dict:
+        return await run_voice_pipeline_direct(state)
+
+
+# module level instance - imported by gateway and tests
+voice_graph = VoiceGraphWrapper()

@@ -58,13 +58,13 @@ def build_filing_graph(checkpointer=None):
 
 def get_filing_graph_with_redis():
     """
-    creates graph with real Redis checkpointer.
-    called by workers in production.
-    RedisSaver must be used as context manager.
+    creates graph with Redis checkpointer for production use.
     """
     settings = get_settings()
-    with RedisSaver.from_conn_string(settings.upstash_redis_url) as checkpointer:
-        return build_filing_graph(checkpointer=checkpointer)
+    # RedisSaver.from_conn_string returns a context manager
+    # we need to use it differently for workers
+    checkpointer = RedisSaver.from_conn_string(settings.upstash_redis_url)
+    return build_filing_graph(checkpointer=checkpointer)
 
 
 # default instance with no checkpointer for testing

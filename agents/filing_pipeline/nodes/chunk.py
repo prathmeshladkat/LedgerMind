@@ -74,8 +74,8 @@ def split_into_sections(text: str) -> list[str]:
     # fallback: split into fixed-size chunks of 1000 characters
     # with 200 character overlap to avoid cutting context
     logger.info("No section headers found, using fixed-size chunking")
-    chunk_size = 1000
-    overlap = 200
+    chunk_size = 500
+    overlap = 100
     chunks = []
     start = 0
 
@@ -164,6 +164,7 @@ async def chunk_document_node(state: FilingState) -> dict:
 
         # step 2: split into sections
         chunks = split_into_sections(plain_text)
+        chunks = [c[:800] for c in chunks]
 
         # step 3: embed and store in Qdrant
         chunk_ids = await embed_and_store_chunks(chunks, ticker, filing_type)

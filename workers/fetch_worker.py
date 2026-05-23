@@ -72,6 +72,8 @@ async def main():
     init_redis()
     init_qdrant()
     from infra.kafka.producer import init_producer
+    from infra.gcs.client import init_gcs    # add this import
+    init_gcs()  
     await init_producer()
 
     worker = FetchWorker()

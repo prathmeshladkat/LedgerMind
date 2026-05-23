@@ -41,32 +41,26 @@ Return ONLY the JSON. No explanation. No markdown. No code blocks.
 
 SIGNAL_RETRY_PROMPT = """
 You are a senior investment banking analyst.
-Your previous extraction attempt had low confidence.
-
-Previous attempt: {previous_signals}
-Issue: {issue}
+Extract structured signals from this SEC filing.
 
 Company: {ticker}
-Filing Type: {filing_type}
+Filing: {filing_type}
 
-Here are additional excerpts to help:
+Excerpts (top relevant sections):
 {chunks}
 
-Try again. Focus on finding concrete numbers and explicit statements.
-If a value truly cannot be found, use null rather than guessing.
-
-Return ONLY a valid JSON object with this exact structure:
+Return ONLY this JSON:
 {{
     "revenue_growth_yoy": <float or null>,
     "gross_margin": <float or null>,
     "guidance_sentiment": "<positive|neutral|negative>",
     "key_risks": ["<risk 1>", "<risk 2>", "<risk 3>"],
     "red_flags": ["<flag 1>", "<flag 2>"],
-    "summary": "<2-3 sentence plain English summary>",
-    "confidence": <float between 0.0 and 1.0>
+    "summary": "<2 sentence summary>",
+    "confidence": <0.0 to 1.0>
 }}
 
-Return ONLY the JSON. No explanation. No markdown.
+Return ONLY the JSON. No explanation.
 """
 
 VOICE_RESPONSE_PROMPT = """

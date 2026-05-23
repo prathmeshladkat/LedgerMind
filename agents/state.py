@@ -61,6 +61,7 @@ class VoiceState(TypedDict):
 
     # ----speak agent writes this -----
     spokent_response: Optional[str]
+    audio_bytes: Optional[bytes]
 
      # ── error tracking ───────
     errors: list[str]

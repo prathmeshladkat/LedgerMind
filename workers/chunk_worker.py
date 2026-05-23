@@ -63,6 +63,8 @@ async def main():
     init_qdrant()
     await ensure_collection()    # creates Qdrant collection if not exists
     from infra.kafka.producer import init_producer
+    from infra.gcs.client import init_gcs    # add this
+    init_gcs()
     await init_producer()
 
     worker = ChunkWorker()

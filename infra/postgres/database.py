@@ -30,7 +30,7 @@ def init_db():
 
     _engine = create_async_engine(
          settings.neon_database_url,
-        echo=settings.is_dev,    # logs all SQL in development
+        echo=False,    # logs all SQL in development
         pool_pre_ping=True,      # checks connection health
         pool_size=5,             # keep 5 connections open
         max_overflow=10,         # allow 10 extra connections under load
